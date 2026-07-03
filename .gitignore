@@ -1,0 +1,9 @@
+.env
+config.conf
+container.conf
+.venv/
+sqlite/
+__pycache__/
+*.pyc
+note-latest.zip
+note-latest.zip.sha256

@@ -1,0 +1,19 @@
+#when: NOTE_DB_BACKEND=file
+#required: NOTE file backend path
+NOTE_PATH=./OBSIDIAN/NOTES/INBOX
+
+#required: deterministic channel feedback
+NOTE_FEEDBACK=1
+
+#choices: none webhook cli
+#required: post-save trigger type
+NOTE_TRIGGER_TYPE=none
+
+#when-not: NOTE_TRIGGER_TYPE=none
+#default-if: NOTE_TRIGGER_TYPE=webhook https://n8n.example.com/webhook/note
+#default-if: NOTE_TRIGGER_TYPE=cli openclaw agent --agent notes --message "Message: $NOTE_MESSAGE Date: $NOTE_DATE Time: $NOTE_TIME Path: $NOTE_PATH Channel: $NOTE_CHANNEL Account: $NOTE_ACCOUNT_ID Sender: $NOTE_SENDER_ID Message-ID: $NOTE_MESSAGE_ID Prompt: $NOTE_PROMPT"
+#required: post-save trigger
+NOTE_TRIGGER=
+
+#required: trigger prompt file
+NOTE_PROMPT=prompt_default.md

@@ -1,0 +1,13 @@
+{
+  "id": "note",
+  "name": "NOTE",
+  "description": "Stores deterministic notes without an AI model call.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
