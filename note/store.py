@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import fcntl
 import json
+import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -64,6 +66,71 @@ def note_directory(payload: dict) -> Path:
     return (Path(str(payload["workspace"])).expanduser() / configured).resolve()
 
 
+def media_directory(payload: dict, now: datetime, kind: str) -> Path:
+    if kind == "file":
+        root = Path(str(payload["note_path"]))
+    elif kind == "sqlite":
+        root = ROOT / "sqlite" / "media"
+    else:
+        configured = Path(get("NOTE_MEDIA_PATH") or "media").expanduser()
+        root = configured if configured.is_absolute() else ROOT / configured
+    target = root.resolve() / f"{now:%Y.%m.%d}"
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def unique_path(directory: Path, stem: str, suffix: str) -> Path:
+    target = directory / f"{stem}{suffix}"
+    index = 1
+    while target.exists():
+        target = directory / f"{stem}_{index:02d}{suffix}"
+        index += 1
+    return target
+
+
+def persist_assets(payload: dict, now: datetime, kind: str) -> list[dict]:
+    if not any((payload.get("media"), payload.get("contacts"), payload.get("location"))):
+        return []
+    directory = media_directory(payload, now, kind)
+    assets: list[dict] = []
+    for item in payload.get("media") or []:
+        source = Path(str(item.get("source_path") or "")).expanduser().resolve()
+        if not source.is_file():
+            continue
+        mime_type = str(item.get("mime_type") or mimetypes.guess_type(source.name)[0] or "")
+        suffix = source.suffix.lower() or mimetypes.guess_extension(mime_type) or ".bin"
+        target = unique_path(directory, f"{now:%H.%M.%S}", suffix)
+        shutil.copy2(source, target)
+        assets.append(
+            {
+                "kind": "media",
+                "path": str(target),
+                "original_name": source.name,
+                "mime_type": mime_type,
+                "metadata": {},
+            }
+        )
+    structured = [("contact", item) for item in payload.get("contacts") or []]
+    if payload.get("location"):
+        structured.append(("location", payload["location"]))
+    for asset_kind, metadata in structured:
+        path = ""
+        if kind == "file":
+            target = unique_path(directory, f"{now:%H.%M.%S}_{asset_kind}", ".json")
+            target.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            path = str(target)
+        assets.append(
+            {
+                "kind": asset_kind,
+                "path": path,
+                "original_name": "",
+                "mime_type": "application/json",
+                "metadata": metadata,
+            }
+        )
+    return assets
+
+
 def store_file(payload: dict, now: datetime) -> dict:
     directory = Path(str(payload["note_path"])).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
@@ -99,27 +166,54 @@ def sql_context(kind: str):
         sender_id = Column(String(255), nullable=False, default="")
         message_id = Column(String(255), nullable=False, default="")
 
+    class NoteAsset(Base):
+        __tablename__ = f"{table_name()}_assets"
+        id = Column(Integer, primary_key=True)
+        note_id = Column(Integer, nullable=True, index=True)
+        kind = Column(String(32), nullable=False)
+        path = Column(Text, nullable=False, default="")
+        original_name = Column(Text, nullable=False, default="")
+        mime_type = Column(String(255), nullable=False, default="")
+        metadata_json = Column(Text, nullable=False, default="{}")
+        note_date = Column(Date, nullable=False)
+        note_time = Column(Time, nullable=False)
+
     engine = create_engine(database_url(kind), future=True, pool_pre_ping=kind != "sqlite")
     Base.metadata.create_all(engine)
-    return sessionmaker(bind=engine, future=True), Note
+    return sessionmaker(bind=engine, future=True), Note, NoteAsset
 
 
-def store_sql(payload: dict, now: datetime, kind: str) -> dict:
-    factory, Note = sql_context(kind)
+def store_sql(payload: dict, now: datetime, kind: str, assets: list[dict] | None = None) -> dict:
+    factory, Note, NoteAsset = sql_context(kind)
     with factory.begin() as session:
-        row = Note(
-            message=str(payload["message"]),
-            note_date=now.date(),
-            note_time=now.time().replace(tzinfo=None),
-            channel=str(payload.get("channel") or ""),
-            account_id=str(payload.get("account_id") or ""),
-            sender_id=str(payload.get("sender_id") or ""),
-            message_id=str(payload.get("message_id") or ""),
-        )
-        session.add(row)
-        session.flush()
-        note_id = row.id
-    return {"id": note_id, "table": table_name()}
+        note_id = None
+        if payload["message"]:
+            row = Note(
+                message=str(payload["message"]),
+                note_date=now.date(),
+                note_time=now.time().replace(tzinfo=None),
+                channel=str(payload.get("channel") or ""),
+                account_id=str(payload.get("account_id") or ""),
+                sender_id=str(payload.get("sender_id") or ""),
+                message_id=str(payload.get("message_id") or ""),
+            )
+            session.add(row)
+            session.flush()
+            note_id = row.id
+        for asset in assets or []:
+            session.add(
+                NoteAsset(
+                    note_id=note_id,
+                    kind=asset["kind"],
+                    path=asset["path"],
+                    original_name=asset["original_name"],
+                    mime_type=asset["mime_type"],
+                    metadata_json=json.dumps(asset["metadata"], ensure_ascii=False),
+                    note_date=now.date(),
+                    note_time=now.time().replace(tzinfo=None),
+                )
+            )
+    return {"id": note_id, "table": table_name(), "assets": assets or []}
 
 
 def format_notes(rows: list[tuple[datetime, str]]) -> str:
@@ -161,7 +255,7 @@ def show_file(payload: dict, cutoff: datetime | None) -> str:
 
 
 def show_sql(kind: str, cutoff: datetime | None) -> str:
-    factory, Note = sql_context(kind)
+    factory, Note, _ = sql_context(kind)
     zone = ZoneInfo(get("NOTE_TIMEZONE"))
     with factory() as session:
         records = session.query(Note).order_by(Note.note_date.asc(), Note.note_time.asc(), Note.id.asc()).all()
@@ -253,12 +347,17 @@ def execute_trigger(note: dict) -> None:
 
 def save(payload: dict) -> dict:
     message = str(payload.get("message") or "").strip()
-    if not message:
-        raise ValueError("note message is empty")
+    if not message and not any((payload.get("media"), payload.get("contacts"), payload.get("location"))):
+        raise ValueError("note is empty")
     payload = {**payload, "message": message, "note_path": str(note_directory(payload))}
     kind = backend()
     now = timestamp(payload)
-    stored = store_file(payload, now) if kind == "file" else store_sql(payload, now, kind)
+    assets = persist_assets(payload, now, kind)
+    if kind == "file":
+        stored = store_file(payload, now) if message else {"path": str(Path(payload["note_path"]))}
+        stored["assets"] = assets
+    else:
+        stored = store_sql(payload, now, kind, assets)
     note = {
         **payload,
         **stored,
@@ -266,8 +365,11 @@ def save(payload: dict) -> dict:
         "date": f"{now:%Y-%m-%d}",
         "time": f"{now:%H:%M:%S}",
     }
-    triggered = trigger_configured()
+    text_only = bool(message) and not any((payload.get("media"), payload.get("contacts"), payload.get("location")))
+    triggered = text_only and trigger_configured()
     reply = "✅ Note saved.\nTrigger fired." if triggered else "✅ Note saved."
+    if not text_only:
+        reply = ""
     return {"ok": True, "reply": feedback(reply), "trigger": triggered, "note": note}
 
 

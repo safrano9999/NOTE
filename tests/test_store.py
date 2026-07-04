@@ -10,10 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class StoreTests(unittest.TestCase):
-    def run_store(self, backend, note_path):
+    def run_store(self, backend, note_path, payload=None, extra_env=None):
         env = os.environ.copy()
         env.update({"NOTE_DB_BACKEND": backend, "NOTE_PATH": str(note_path), "PYTHONPATH": str(ROOT)})
-        payload = {
+        env.update(extra_env or {})
+        payload = payload or {
             "message": "Test note",
             "timestamp": 1783090800000,
             "note_path": str(note_path),
@@ -49,6 +50,32 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["note"]["backend"], "sqlite")
         self.assertGreater(result["note"]["id"], 0)
+
+    def test_media_is_saved_without_feedback_or_trigger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "photo.jpg"
+            source.write_bytes(b"image")
+            payload = {
+                "message": "",
+                "timestamp": 1783090800000,
+                "workspace": tmp,
+                "media": [{"source_path": str(source), "mime_type": "image/jpeg"}],
+            }
+            result = json.loads(
+                self.run_store(
+                    "file",
+                    Path(tmp) / "notes",
+                    payload,
+                    {"NOTE_FEEDBACK": "1", "NOTE_TRIGGER_TYPE": "webhook", "NOTE_TRIGGER": "https://example.invalid"},
+                ).stdout
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["reply"], "")
+            self.assertFalse(result["trigger"])
+            copied = Path(result["note"]["assets"][0]["path"])
+            self.assertEqual(copied.read_bytes(), b"image")
+            self.assertEqual(copied.parent.name, "2026.07.03")
+            self.assertFalse(list((Path(tmp) / "notes").glob("*.md")))
 
 
 if __name__ == "__main__":

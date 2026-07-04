@@ -12,6 +12,6 @@ export function isSlashCommand(message) {
   return /^\//.test(text(message));
 }
 
-export function shouldStoreDirectNote(ctx, message) {
-  return isNotesModel(ctx) && Boolean(text(message)) && !isSlashCommand(message);
+export function shouldStoreDirectNote(ctx, message, hasContent = Boolean(text(message))) {
+  return isNotesModel(ctx) && hasContent && !isSlashCommand(message);
 }
