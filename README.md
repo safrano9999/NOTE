@@ -2,6 +2,13 @@
 
 NOTE captures notes deterministically without an LLM call.
 
+## Python runtime
+
+NOTE requires Python and the packages listed in `requirements.txt`. Its bootstrap first uses an
+available `python3` and tries `pip` when dependencies are missing; if no usable Python environment
+is available, it installs `uv` locally, creates `.venv`, and installs Python and the requirements
+without requiring root access.
+
 ## Normal AI operation
 
 - `/note <text>` stores a note independently of the active AI model.
