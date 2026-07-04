@@ -3,12 +3,13 @@ import { text } from "./common.js";
 export function messageFromEvent(event) {
   const hasMedia = Array.isArray(event?.mediaPaths) && event.mediaPaths.length > 0;
   const message = hasMedia ? text(event?.userText) : text(event?.cleanedBody);
-  return message
+  const cleaned = message
     .split(/\r?\n/)
     .filter((line) => !/^\[media attached(?:\s+\d+\/\d+)?:[^\]]+\]$/i.test(line.trim()))
-    .filter((line) => !/^<media:[^>]+>$/i.test(line.trim()))
     .join("\n")
+    .replace(/<media:[^>]+>/gi, "")
     .trim();
+  return hasMedia ? cleaned.replace(/^\[[^\]\n]+\]\s+[^:\n]+:\s*/, "").trim() : cleaned;
 }
 
 export function mediaFromEvent(event) {
