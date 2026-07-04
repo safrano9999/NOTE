@@ -1,8 +1,8 @@
 import { text } from "./common.js";
 
 export function messageFromEvent(event) {
-  const message = text(event?.cleanedBody);
-  if (!Array.isArray(event?.mediaPaths) || event.mediaPaths.length === 0) return message;
+  const hasMedia = Array.isArray(event?.mediaPaths) && event.mediaPaths.length > 0;
+  const message = hasMedia ? text(event?.userText) : text(event?.cleanedBody);
   return message
     .split(/\r?\n/)
     .filter((line) => !/^\[media attached(?:\s+\d+\/\d+)?:[^\]]+\]$/i.test(line.trim()))
@@ -18,6 +18,7 @@ export function mediaFromEvent(event) {
     .map((sourcePath, index) => ({
       source_path: text(sourcePath),
       mime_type: text(types[index]),
+      workspace_dir: text(event?.mediaWorkspaceDir),
     }))
     .filter((item) => item.source_path);
 }

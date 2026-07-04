@@ -94,7 +94,10 @@ def persist_assets(payload: dict, now: datetime, kind: str) -> list[dict]:
     directory = media_directory(payload, now, kind)
     assets: list[dict] = []
     for item in payload.get("media") or []:
-        source = Path(str(item.get("source_path") or "")).expanduser().resolve()
+        source = Path(str(item.get("source_path") or "")).expanduser()
+        if not source.is_absolute():
+            source = Path(str(item.get("workspace_dir") or payload.get("workspace") or ROOT)) / source
+        source = source.resolve()
         if not source.is_file():
             continue
         mime_type = str(item.get("mime_type") or mimetypes.guess_type(source.name)[0] or "")
