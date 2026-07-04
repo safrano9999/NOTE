@@ -5,7 +5,7 @@ export function isDummyProvider(ctx) {
 }
 
 export function isNotesModel(ctx) {
-  return isDummyProvider(ctx) && text(ctx.modelId).toLowerCase() === "notes";
+  return isDummyProvider(ctx) && text(ctx.modelId).toLowerCase() === "note";
 }
 
 export function isSlashCommand(message) {
