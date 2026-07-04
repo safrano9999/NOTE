@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from urllib import request
 from urllib.parse import quote_plus
-from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -55,8 +54,7 @@ def database_url(kind: str) -> str:
 
 def timestamp(payload: dict) -> datetime:
     raw = payload.get("timestamp")
-    zone = ZoneInfo(get("NOTE_TIMEZONE"))
-    return datetime.fromtimestamp(float(raw) / 1000, zone) if raw else datetime.now(zone)
+    return datetime.fromtimestamp(float(raw) / 1000).astimezone() if raw else datetime.now().astimezone()
 
 
 def note_directory(payload: dict) -> Path:
@@ -237,7 +235,6 @@ def format_notes(rows: list[tuple[datetime, str]]) -> str:
 
 def show_file(payload: dict, cutoff: datetime | None) -> str:
     directory = Path(str(payload["note_path"])).expanduser().resolve()
-    zone = ZoneInfo(get("NOTE_TIMEZONE"))
     rows: list[tuple[datetime, str]] = []
     for target in sorted(directory.glob("????.??.??.md")) if directory.exists() else []:
         try:
@@ -249,7 +246,7 @@ def show_file(payload: dict, cutoff: datetime | None) -> str:
             if len(block_lines) < 2:
                 continue
             try:
-                created = datetime.combine(date, datetime.strptime(block_lines[-1].strip(), "%H:%M:%S").time(), zone)
+                created = datetime.combine(date, datetime.strptime(block_lines[-1].strip(), "%H:%M:%S").time()).astimezone()
             except ValueError:
                 continue
             if cutoff is None or created >= cutoff:
@@ -259,12 +256,11 @@ def show_file(payload: dict, cutoff: datetime | None) -> str:
 
 def show_sql(kind: str, cutoff: datetime | None) -> str:
     factory, Note, _ = sql_context(kind)
-    zone = ZoneInfo(get("NOTE_TIMEZONE"))
     with factory() as session:
         records = session.query(Note).order_by(Note.note_date.asc(), Note.note_time.asc(), Note.id.asc()).all()
     rows = []
     for row in records:
-        created = datetime.combine(row.note_date, row.note_time, zone)
+        created = datetime.combine(row.note_date, row.note_time).astimezone()
         if cutoff is None or created >= cutoff:
             rows.append((created, row.message))
     return format_notes(rows)
@@ -379,8 +375,7 @@ def save(payload: dict) -> dict:
 def show(payload: dict, hours: float | None = None) -> dict:
     payload = {**payload, "note_path": str(note_directory(payload))}
     kind = backend()
-    zone = ZoneInfo(get("NOTE_TIMEZONE"))
-    cutoff = datetime.now(zone) - timedelta(hours=hours) if hours is not None else None
+    cutoff = datetime.now().astimezone() - timedelta(hours=hours) if hours is not None else None
     output = show_file(payload, cutoff) if kind == "file" else show_sql(kind, cutoff)
     return {"ok": True, "reply": output, "trigger": False}
 
