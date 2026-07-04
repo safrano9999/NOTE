@@ -17,3 +17,7 @@ NOTE_TRIGGER=
 
 #required: trigger prompt file
 NOTE_PROMPT=prompt_default.md
+
+#default-preset: Europe/Vienna
+#required: note timezone
+NOTE_TIMEZONE=Europe/Vienna

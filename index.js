@@ -1,7 +1,6 @@
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { registerNoteCommand } from "./functions/command.js";
 import { registerDirectNoteHandler } from "./functions/direct.js";
-import { ensureFileDirectories } from "./functions/paths.js";
 
 const configSchema = {
   type: "object",
@@ -15,7 +14,6 @@ export default definePluginEntry({
   description: "Stores deterministic notes without an AI model call.",
   configSchema,
   register(api) {
-    ensureFileDirectories(api);
     registerNoteCommand(api);
     registerDirectNoteHandler(api);
   },

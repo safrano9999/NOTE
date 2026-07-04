@@ -4,23 +4,25 @@ import fcntl
 import json
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib import request
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from python_header import get
+from python_header import get, get_bool
 
 
 VALID_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def backend() -> str:
-    value = get("NOTE_DB_BACKEND", "file").lower()
+    value = get("NOTE_DB_BACKEND").lower()
     aliases = {"postgresql": "postgres", "pgsql": "postgres", "mysql": "mariadb", "sqlite3": "sqlite"}
     value = aliases.get(value, value)
     if value not in {"file", "sqlite", "mariadb", "postgres"}:
@@ -29,7 +31,7 @@ def backend() -> str:
 
 
 def table_name() -> str:
-    prefix = get("NOTE_DB_PREFIX", "note")
+    prefix = get("NOTE_DB_PREFIX")
     if prefix and not VALID_IDENTIFIER.fullmatch(prefix):
         raise ValueError("NOTE_DB_PREFIX must be empty or a valid SQL identifier")
     return f"{prefix}_notes" if prefix else "notes"
@@ -41,18 +43,25 @@ def database_url(kind: str) -> str:
         sqlite_dir.mkdir(parents=True, exist_ok=True)
         return f"sqlite:///{sqlite_dir / 'note.sqlite3'}"
     driver = "postgresql+psycopg" if kind == "postgres" else "mysql+pymysql"
-    host = get("NOTE_DB_URL", "127.0.0.1")
-    port = get("NOTE_DB_PORT", "5432" if kind == "postgres" else "3306")
+    host = get("NOTE_DB_URL")
+    port = get("NOTE_DB_PORT")
     user = quote_plus(get("NOTE_DB_USER"))
     password = quote_plus(get("NOTE_DB_PW"))
-    name = quote_plus(get("NOTE_DB_NAME", "note"))
+    name = quote_plus(get("NOTE_DB_NAME"))
     return f"{driver}://{user}:{password}@{host}:{port}/{name}"
 
 
 def timestamp(payload: dict) -> datetime:
     raw = payload.get("timestamp")
-    zone = ZoneInfo(get("NOTE_TIMEZONE", "Europe/Vienna"))
+    zone = ZoneInfo(get("NOTE_TIMEZONE"))
     return datetime.fromtimestamp(float(raw) / 1000, zone) if raw else datetime.now(zone)
+
+
+def note_directory(payload: dict) -> Path:
+    configured = Path(get("NOTE_PATH")).expanduser()
+    if configured.is_absolute():
+        return configured.resolve()
+    return (Path(str(payload["workspace"])).expanduser() / configured).resolve()
 
 
 def store_file(payload: dict, now: datetime) -> dict:
@@ -131,7 +140,7 @@ def format_notes(rows: list[tuple[datetime, str]]) -> str:
 
 def show_file(payload: dict, cutoff: datetime | None) -> str:
     directory = Path(str(payload["note_path"])).expanduser().resolve()
-    zone = ZoneInfo(get("NOTE_TIMEZONE", "Europe/Vienna"))
+    zone = ZoneInfo(get("NOTE_TIMEZONE"))
     rows: list[tuple[datetime, str]] = []
     for target in sorted(directory.glob("????.??.??.md")) if directory.exists() else []:
         try:
@@ -153,7 +162,7 @@ def show_file(payload: dict, cutoff: datetime | None) -> str:
 
 def show_sql(kind: str, cutoff: datetime | None) -> str:
     factory, Note = sql_context(kind)
-    zone = ZoneInfo(get("NOTE_TIMEZONE", "Europe/Vienna"))
+    zone = ZoneInfo(get("NOTE_TIMEZONE"))
     with factory() as session:
         records = session.query(Note).order_by(Note.note_date.asc(), Note.note_time.asc(), Note.id.asc()).all()
     rows = []
@@ -164,21 +173,153 @@ def show_sql(kind: str, cutoff: datetime | None) -> str:
     return format_notes(rows)
 
 
+def feedback(text: str) -> str:
+    return text if get_bool("NOTE_FEEDBACK") else ""
+
+
+def trigger_type() -> str:
+    value = get("NOTE_TRIGGER_TYPE").lower()
+    if value not in {"none", "webhook", "cli"}:
+        raise ValueError(f"unsupported NOTE_TRIGGER_TYPE: {value}")
+    return value
+
+
+def trigger_configured() -> bool:
+    return trigger_type() != "none" and bool(get("NOTE_TRIGGER"))
+
+
+def prompt_text() -> str:
+    configured = Path(get("NOTE_PROMPT")).expanduser()
+    prompt_path = configured if configured.is_absolute() else ROOT / configured
+    return prompt_path.read_text(encoding="utf-8").strip()
+
+
+def trigger_environment(note: dict) -> dict[str, str]:
+    return {
+        "NOTE_PROMPT": prompt_text(),
+        "NOTE_MESSAGE": str(note["message"]),
+        "NOTE_DATE": str(note["date"]),
+        "NOTE_TIME": str(note["time"]),
+        "NOTE_PATH": str(note["note_path"]),
+        "NOTE_CHANNEL": str(note.get("channel") or ""),
+        "NOTE_ACCOUNT_ID": str(note.get("account_id") or ""),
+        "NOTE_SENDER_ID": str(note.get("sender_id") or ""),
+        "NOTE_MESSAGE_ID": str(note.get("message_id") or ""),
+    }
+
+
+def execute_trigger(note: dict) -> None:
+    kind = trigger_type()
+    target = get("NOTE_TRIGGER")
+    if kind == "none" or not target:
+        return
+    trigger_env = trigger_environment(note)
+    if kind == "cli":
+        subprocess.run(
+            target,
+            cwd=ROOT,
+            env={**os.environ, **trigger_env},
+            shell=True,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return
+    body = json.dumps(
+        {
+            "prompt": trigger_env["NOTE_PROMPT"],
+            "message": trigger_env["NOTE_MESSAGE"],
+            "date": trigger_env["NOTE_DATE"],
+            "time": trigger_env["NOTE_TIME"],
+            "path": trigger_env["NOTE_PATH"],
+            "channel": trigger_env["NOTE_CHANNEL"],
+            "account_id": trigger_env["NOTE_ACCOUNT_ID"],
+            "sender_id": trigger_env["NOTE_SENDER_ID"],
+            "message_id": trigger_env["NOTE_MESSAGE_ID"],
+        }
+    ).encode()
+    token = os.path.expandvars("$SHADOWED_N8N_TOKEN")
+    headers = {"Content-Type": "application/json"}
+    if token != "$SHADOWED_N8N_TOKEN":
+        headers["Authorization"] = f"Bearer {token}"
+    with request.urlopen(
+        request.Request(os.path.expandvars(target), data=body, headers=headers, method="POST"),
+        timeout=300,
+    ) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"HTTP {response.status}")
+
+
+def save(payload: dict) -> dict:
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        raise ValueError("note message is empty")
+    payload = {**payload, "message": message, "note_path": str(note_directory(payload))}
+    kind = backend()
+    now = timestamp(payload)
+    stored = store_file(payload, now) if kind == "file" else store_sql(payload, now, kind)
+    note = {
+        **payload,
+        **stored,
+        "backend": kind,
+        "date": f"{now:%Y-%m-%d}",
+        "time": f"{now:%H:%M:%S}",
+    }
+    triggered = trigger_configured()
+    reply = "✅ Note saved.\nTrigger fired." if triggered else "✅ Note saved."
+    return {"ok": True, "reply": feedback(reply), "trigger": triggered, "note": note}
+
+
+def show(payload: dict, hours: float | None = None) -> dict:
+    payload = {**payload, "note_path": str(note_directory(payload))}
+    kind = backend()
+    zone = ZoneInfo(get("NOTE_TIMEZONE"))
+    cutoff = datetime.now(zone) - timedelta(hours=hours) if hours is not None else None
+    output = show_file(payload, cutoff) if kind == "file" else show_sql(kind, cutoff)
+    return {"ok": True, "reply": output, "trigger": False}
+
+
+def command(payload: dict) -> dict:
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        return {"ok": True, "reply": "Usage: /note <message>", "trigger": False}
+    match = re.fullmatch(r"show(?:\s+(\d+(?:[.,]\d+)?)h)?", message, re.IGNORECASE)
+    if match:
+        hours = float(match.group(1).replace(",", ".")) if match.group(1) else None
+        if hours is not None and hours <= 0:
+            return {"ok": True, "reply": "Usage: /note show [hours]h", "trigger": False}
+        return show(payload, hours)
+    if re.match(r"^show\b", message, re.IGNORECASE):
+        return {"ok": True, "reply": "Usage: /note show or /note show <hours>h", "trigger": False}
+    return save(payload)
+
+
 def main() -> None:
     payload = json.load(sys.stdin)
-    kind = backend()
-    if payload.get("action") == "show":
-        hours = payload.get("hours")
-        zone = ZoneInfo(get("NOTE_TIMEZONE", "Europe/Vienna"))
-        cutoff = datetime.now(zone) - timedelta(hours=float(hours)) if hours is not None else None
-        output = show_file(payload, cutoff) if kind == "file" else show_sql(kind, cutoff)
-        print(json.dumps({"backend": kind, "text": output}))
-        return
-    if not str(payload.get("message") or "").strip():
-        raise ValueError("note message is empty")
-    now = timestamp(payload)
-    result = store_file(payload, now) if kind == "file" else store_sql(payload, now, kind)
-    print(json.dumps({**result, "backend": kind, "date": f"{now:%Y-%m-%d}", "time": f"{now:%H:%M:%S}"}))
+    action = str(payload.get("action") or "save")
+    try:
+        if action == "command":
+            result = command(payload)
+        elif action == "show":
+            result = show(payload, payload.get("hours"))
+        elif action == "trigger":
+            execute_trigger(dict(payload["note"]))
+            result = {"ok": True, "status": feedback("✅ Trigger completed.")}
+        elif action == "save":
+            result = save(payload)
+        else:
+            raise ValueError(f"unsupported NOTE action: {action}")
+    except Exception as exc:
+        label = "Trigger" if action == "trigger" else "Note"
+        result = {
+            "ok": False,
+            "reply": feedback(f"❌ {label} processing failed."),
+            "status": feedback("❌ Trigger failed.") if action == "trigger" else "",
+            "error": str(exc),
+            "trigger": False,
+        }
+    print(json.dumps(result))
 
 
 if __name__ == "__main__":

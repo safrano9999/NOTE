@@ -9,7 +9,7 @@ export const storeScript = path.join(pluginRoot, "note", "store.py");
 const venvPython = path.join(pluginRoot, ".venv", "bin", "python");
 
 export function pythonCommand() {
-  return fs.existsSync(venvPython) ? venvPython : (process.env.NOTE_PYTHON || "python3");
+  return fs.existsSync(venvPython) ? venvPython : "python3";
 }
 
 export function agentIdFromSession(sessionKey) {
@@ -22,22 +22,4 @@ export function workspaceFor(config, agentId) {
     : undefined;
   const configured = text(agent?.workspace) || text(config?.agents?.defaults?.workspace);
   return path.resolve(configured.replace(/^~(?=\/)/, os.homedir()) || path.join(os.homedir(), ".openclaw", "workspace"));
-}
-
-export function noteDirectory(config, sessionKey) {
-  const configured = text(process.env.NOTE_PATH) || "./OBSIDIAN/NOTES/INBOX";
-  return path.isAbsolute(configured)
-    ? configured
-    : path.resolve(workspaceFor(config, agentIdFromSession(sessionKey)), configured);
-}
-
-export function ensureFileDirectories(api) {
-  if ((text(process.env.NOTE_DB_BACKEND) || "file").toLowerCase() !== "file") return;
-  const config = api.runtime.config.current();
-  const agents = Array.isArray(config?.agents?.list) && config.agents.list.length
-    ? config.agents.list
-    : [{ id: "main" }];
-  for (const agent of agents) {
-    fs.mkdirSync(noteDirectory(config, `agent:${text(agent.id) || "main"}:main`), { recursive: true });
-  }
 }
