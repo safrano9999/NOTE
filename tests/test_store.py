@@ -2,7 +2,9 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 
@@ -30,7 +32,16 @@ class StoreTests(unittest.TestCase):
 
     def test_file_backend_appends_markdown(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = json.loads(self.run_store("file", tmp).stdout)
+            payload = {
+                "message": "Test note",
+                "timestamp": time.time_ns() // 1_000_000,
+                "note_path": tmp,
+                "channel": "telegram",
+                "account_id": "main",
+                "sender_id": "42",
+                "message_id": "99",
+            }
+            result = json.loads(self.run_store("file", tmp, payload).stdout)
             self.assertTrue(result["ok"])
             self.assertEqual(result["reply"], "✅ Note saved.")
             target = Path(result["note"]["path"])
@@ -74,7 +85,8 @@ class StoreTests(unittest.TestCase):
             self.assertFalse(result["trigger"])
             copied = Path(result["note"]["assets"][0]["path"])
             self.assertEqual(copied.read_bytes(), b"image")
-            self.assertEqual(copied.parent.name, "2026.07.03")
+            expected_date = datetime.fromtimestamp(payload["timestamp"] / 1000).astimezone().strftime("%Y.%m.%d")
+            self.assertEqual(copied.parent.name, expected_date)
             self.assertFalse(list((Path(tmp) / "notes").glob("*.md")))
 
 
