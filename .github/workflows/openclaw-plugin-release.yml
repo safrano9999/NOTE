@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 env:
   ZIP_NAME: note-latest.zip
@@ -22,6 +23,12 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Purge old Actions artifacts
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/purge-github-actions-artifacts.sh
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -46,6 +53,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: note-latest
+          retention-days: 1
           path: |
             ${{ env.ZIP_NAME }}
             ${{ env.ZIP_NAME }}.sha256
@@ -90,3 +98,10 @@ jobs:
               sleep $((attempt * 5))
             done
           fi
+
+      - name: Purge Actions artifacts after run
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/purge-github-actions-artifacts.sh
